@@ -311,7 +311,7 @@ function ThreadMessages({
           row?.dataset.messageId === messageId &&
           document.activeElement === row;
         // Ancestor expansion happens synchronously in a layout effect. Do not
-        // retain focus intent after this update (collapse, deletion, or unmount).
+        // retain focus intent after this update (deletion or unmount).
         queueMicrotask(() => {
           restore = false;
         });
@@ -520,16 +520,19 @@ function ThreadMessages({
     follow.current = false;
   };
   let previousReply: ChannelMessage | undefined = snapshot.root;
+  let previousParent: string | undefined;
   function renderReplies(parent: string | undefined, depth = 0): ReactNode {
     return (tree.children.get(parent) ?? []).map((row) => {
       const children = tree.children.get(row.id);
       const continuation =
+        previousParent === parent &&
         previousReply?.authorId === row.authorId &&
         row.createdAt >= previousReply.createdAt &&
         row.createdAt - previousReply.createdAt <= 10 * 60 &&
         !row.membership;
       previousReply =
         children?.length && !expanded.has(row.id) ? undefined : row;
+      previousParent = parent;
       const descendants = branchReplies.get(row.id) ?? [];
       const unreadCount = descendants.filter(
         (reply) => session.unread.attention(channelId, reply.id).unread,
@@ -537,12 +540,12 @@ function ThreadMessages({
       const unreadLabel = unreadCount
         ? `${unreadCount} new in available replies`
         : undefined;
-      const message = (branchControl?: ReactNode) => (
+      const message = (
         <MessageRow
-          branchControl={branchControl}
           extensions={extensions}
           session={session}
           scope={scope}
+          compactActions={!!row.replyParentId && row.replyParentId !== rootId}
           onReply={snapshot.root ? targetReply : undefined}
           row={row}
           profile={profiles.get(row.authorId)}
@@ -575,7 +578,7 @@ function ThreadMessages({
 
           <ReplyBranch
             message={message}
-            collapsible={!!children?.length}
+            hasReplies={!!children?.length}
             layout={continuation ? "continuation" : "thread"}
             label={`View ${descendants.length} ${descendants.length === 1 ? "reply" : "replies"}${unreadLabel ? `. ${unreadLabel}` : ""}`}
             summary={
@@ -594,19 +597,10 @@ function ThreadMessages({
             }
             depth={depth}
             open={expanded.has(row.id)}
-            onOpenChange={(open) => {
+            onExpand={() => {
               follow.current = false;
               targetAnchor.current = undefined;
-              setExpanded((current) => {
-                const next = new Set(current);
-                if (open) next.add(row.id);
-                else {
-                  next.delete(row.id);
-                  for (const id of current)
-                    if (tree.ancestors(id).includes(row.id)) next.delete(id);
-                }
-                return next;
-              });
+              setExpanded((current) => new Set([...current, row.id]));
             }}
           >
             {expanded.has(row.id) && (
