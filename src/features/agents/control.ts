@@ -182,6 +182,7 @@ export interface AgentControlHost {
     id: string,
     resolution: CommunityResolution,
   ): Promise<ControlSnapshot>;
+  localCloneSettings?(id: string): Promise<CloneSettings>;
   cloneSettings?(source: ImportSource, pubkey: string): Promise<CloneSettings>;
   models?: ModelHost;
   installGoose?(): Promise<GooseInstallReport>;
@@ -249,6 +250,7 @@ export interface AgentControl {
   /** Sensitive local output. Native custody and exact community are rechecked per read. */
   readLog?(target: AgentLogTarget): Promise<string>;
   configureHere?: AgentControlHost["configureHere"];
+  localCloneSettings?: AgentControlHost["localCloneSettings"];
   cloneSettings?: AgentControlHost["cloneSettings"];
   models?: AgentModels;
   installGoose?(): Promise<GooseInstallReport>;
@@ -768,6 +770,22 @@ export function createAgentControl(
                 return native.configureHere(id, resolution);
               },
               (data) => update({ data }),
+              false,
+              undefined,
+              true,
+            ),
+        }
+      : {}),
+    ...(host?.localCloneSettings
+      ? {
+          localCloneSettings: (id: string) =>
+            run(
+              (native) => {
+                if (!native.localCloneSettings)
+                  throw new Error("Local clone is unavailable.");
+                return native.localCloneSettings(id);
+              },
+              () => {},
               false,
               undefined,
               true,
