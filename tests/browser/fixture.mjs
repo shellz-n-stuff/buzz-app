@@ -54,7 +54,6 @@ export const test = base.extend({
   dmLabels: [false, { option: true }],
   tallMessages: [false, { option: true }],
   membershipActivity: [false, { option: true }],
-  communityRole: ["owner", { option: true }],
   historyCounts: [{ alpha: 1, beta: 1 }, { option: true }],
   channelIds: [channels, { option: true }],
   developmentReact: [false, { option: true, scope: "worker" }],
@@ -93,7 +92,6 @@ export const test = base.extend({
       dmLabels,
       tallMessages,
       membershipActivity,
-      communityRole,
       historyCounts,
       channelIds: channels,
       pluginFixtures,
@@ -111,6 +109,7 @@ export const test = base.extend({
     const typingKeys = [key(2), key(3)];
     const userKey = key(4);
     const viewer = getPublicKey(userKey);
+    let communityRole = "owner";
     const membershipKeys = membershipActivity
       ? [generateSecretKey(), generateSecretKey()]
       : [];
@@ -682,14 +681,7 @@ export const test = base.extend({
           kinds: [13534],
           limit: 1,
         });
-        return [
-          sign(
-            13534,
-            [["member", viewer, communityRole ?? "owner"]],
-            "",
-            relayKey,
-          ),
-        ];
+        return [sign(13534, [["member", viewer, communityRole]], "", relayKey)];
       }
       if (filter.kinds?.includes(39001))
         return rosterIds
@@ -1542,6 +1534,10 @@ export const test = base.extend({
         sign: (template) => finalizeEvent(template, userKey),
         origin,
         report,
+        setCommunityRole(role) {
+          expect(["owner", "admin", "member"]).toContain(role);
+          communityRole = role;
+        },
         watchPageErrors(other) {
           const watched = watchPageErrors(other);
           watchedPages.push(watched);
