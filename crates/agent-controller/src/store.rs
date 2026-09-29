@@ -16,11 +16,11 @@ const MAX_DEFAULTS_BYTES: usize = 1024 * 1024;
 
 #[derive(Default, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
-struct Document {
+pub(crate) struct Document {
     version: u32,
-    agents: Vec<Agent>,
+    pub(crate) agents: Vec<Agent>,
     #[serde(flatten)]
-    extra: BTreeMap<String, Value>,
+    pub(crate) extra: BTreeMap<String, Value>,
 }
 /// One native host owns this profile for its entire lifetime. A corrupt store is
 /// an error, never a fresh library; there is no auto-reset or legacy write path.
@@ -93,7 +93,7 @@ impl Store {
     fn path(&self) -> PathBuf {
         self.root.join("agents.json")
     }
-    fn read(&self) -> Result<Document> {
+    pub(crate) fn read(&self) -> Result<Document> {
         let path = self.path();
         match fs::symlink_metadata(&path) {
             Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
@@ -130,7 +130,7 @@ impl Store {
         validate(&doc)?;
         Ok(doc)
     }
-    fn write(&self, doc: &Document) -> Result<()> {
+    pub(crate) fn write(&self, doc: &Document) -> Result<()> {
         self.write_with_backup(doc, true)
     }
     fn write_with_backup(&self, doc: &Document, backup: bool) -> Result<()> {

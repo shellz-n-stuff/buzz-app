@@ -169,6 +169,9 @@ fn bundle(directory: &Path) -> RuntimeBundle {
     ] {
         let path = directory.join(name);
         fs::write(&path, r#"#!/bin/sh
+case "$BUZZ_ACP_AGENT_ARGS" in
+  --launch,*) exec "$BUZZ_ACP_AGENT_COMMAND" --launch "${BUZZ_ACP_AGENT_ARGS#--launch,}" ;;
+esac
 printf '%s\n' "$BUZZ_ACP_LAZY_POOL" "$BUZZ_ACP_IDLE_POOL_SLEEP" "$BUZZ_ACP_SYSTEM_PROMPT" "$BUZZ_ACP_MODEL" "$BUZZ_ACP_AGENT_ARGS" "$BUZZ_RELAY_URL" "$BUZZ_ACP_RESPOND_TO" "$BUZZ_MANAGED_AGENT" "$BUZZ_ACP_REPLAY_FLOOR" "$PROVIDER_TEST_SETTING" >> starts
 printf '%s' "$BUZZ_ACP_TEAM_INSTRUCTIONS" > team-instructions
 printf '%s\n' "$BUZZ_AGENT_CONFIG_DIR" "$DATABRICKS_HOST" "$DATABRICKS_MODEL_FILTER" "${DATABRICKS_TOKEN-unset}" "$TMPDIR" "$PATH" > runtime-env
@@ -2376,4 +2379,150 @@ fn use_here_exhausted_revision_preserves_the_saved_import() {
     );
     assert_eq!(fs::read(path).unwrap(), before);
     assert!(!store.snapshot().unwrap().agents[0].configured);
+}
+
+#[test]
+#[cfg(unix)]
+fn provider_runs_through_controller_start_restart_and_missing_provider_fails_closed() {
+    for worker in ["buzz-agent", "goose"] {
+        protected_worker_lifecycle(worker);
+    }
+}
+
+#[cfg(unix)]
+fn protected_worker_lifecycle(worker: &str) {
+    use crate::security::{Binding, Request};
+    use std::os::unix::fs::PermissionsExt;
+    let dir = tempfile::tempdir().unwrap();
+    let tools = tempfile::tempdir().unwrap();
+    let mut saved = agent(dir.path());
+    let runtime = bundle(tools.path());
+    if worker == "goose" {
+        fs::copy(tools.path().join("buzz-agent"), tools.path().join("goose")).unwrap();
+        saved.harness.command = tools.path().join("goose").display().to_string();
+        saved.harness.args = vec!["acp".into()];
+    }
+    let mut store = Store::open(dir.path().join("config")).unwrap();
+    store.insert(vec![saved.clone()]).unwrap();
+    let mut controller = Controller::new(
+        store,
+        Arc::new(Memory),
+        Ok(runtime),
+        dir.path().join("ownership"),
+    );
+    // Plugin configuration errors must not affect unprotected agents.
+    controller.protect_control_paths(Err("Invalid plugin profile".into()));
+    assert!(matches!(
+        controller.action(&saved.id, Action::Start).unwrap().agents[0].status,
+        ProcessStatus::Running
+    ));
+    wait_for_contents(&dir.path().join("starts"), |s| {
+        (s.lines().count() == 10).then_some(())
+    });
+    controller.action(&saved.id, Action::Stop).unwrap();
+    let provider = dir.path().join("provider");
+    fs::write(
+        &provider,
+        r#"#!/bin/sh
+[ "$1" = --launch ] || exit 2
+/bin/cat "$2" >> launches
+printf '\n' >> launches
+trap 'exit 0' TERM INT
+while :; do /bin/sleep 0.1; done
+"#,
+    )
+    .unwrap();
+    fs::set_permissions(&provider, fs::Permissions::from_mode(0o700)).unwrap();
+    let lease = controller
+        .security(Request::Register {
+            provider: "test.provider".into(),
+            executable: provider,
+        })
+        .unwrap()["lease"]
+        .as_str()
+        .unwrap()
+        .to_owned();
+    controller
+        .security(Request::Agent {
+            id: saved.id.clone(),
+            revision: saved.revision,
+            binding: Some(Binding {
+                provider: "test.provider".into(),
+                policy: json!({"synthetic":true}),
+            }),
+        })
+        .unwrap();
+    assert!(
+        controller.action(&saved.id, Action::Start).unwrap().agents[0]
+            .error
+            .as_deref()
+            .unwrap()
+            .contains("Invalid plugin profile")
+    );
+    assert!(!dir.path().join("launches").exists());
+    let plugin_root = dir.path().join("plugins");
+    controller.protect_control_paths(Ok(vec![plugin_root.clone()]));
+    for (index, action) in [Action::Start, Action::Restart].into_iter().enumerate() {
+        let snapshot = controller.action(&saved.id, action).unwrap();
+        assert!(
+            matches!(snapshot.agents[0].status, ProcessStatus::Running),
+            "{:?}",
+            snapshot.agents[0].error
+        );
+        let launches: Vec<serde_json::Value> =
+            wait_for_contents(&dir.path().join("launches"), |s| {
+                let values = s
+                    .lines()
+                    .map(serde_json::from_str)
+                    .collect::<std::result::Result<Vec<_>, _>>()
+                    .ok()?;
+                (values.len() == index + 1).then_some(values)
+            });
+        let context = &launches[index];
+        assert_eq!(
+            context["worker"],
+            tools.path().join(worker).to_str().unwrap()
+        );
+        assert_eq!(
+            context["args"],
+            if worker == "goose" {
+                json!(["acp"])
+            } else {
+                json!([])
+            }
+        );
+        assert_eq!(context["policy"], json!({"synthetic":true}));
+        assert_eq!(context["workspace"], saved.workspace);
+        let paths = context["protectedPaths"].as_array().unwrap();
+        for path in [
+            &plugin_root,
+            &dir.path().join("config"),
+            &tools.path().to_path_buf(),
+        ] {
+            assert!(paths.contains(&json!(path)), "{paths:?}");
+        }
+    }
+    controller.action(&saved.id, Action::Stop).unwrap();
+    controller
+        .security(Request::Unregister {
+            provider: "test.provider".into(),
+            lease,
+        })
+        .unwrap();
+    let before = fs::read(dir.path().join("launches")).unwrap();
+    let refused = controller.action(&saved.id, Action::Start).unwrap();
+    assert!(refused.agents[0]
+        .error
+        .as_deref()
+        .unwrap()
+        .contains("unavailable"));
+    assert!(controller.running.is_empty());
+    assert_eq!(fs::read(dir.path().join("launches")).unwrap(), before);
+    assert_eq!(
+        fs::read_to_string(dir.path().join("starts"))
+            .unwrap()
+            .lines()
+            .count(),
+        10
+    );
 }
